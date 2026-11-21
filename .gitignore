@@ -68,9 +68,8 @@
 
 /models/*
 /models-mnt
-!/models/.editorconfig
-!/models/ggml-vocab-*.gguf*
-!/models/templates
+!/models/README.md
+!/tests/fixtures/vocab/ggml-vocab-*.gguf*
 
 # Zig
 
@@ -89,8 +88,6 @@
 !/examples/*.bat
 !/examples/*/*.kts
 !/examples/*/*/*.kts
-!/examples/sycl/*.bat
-!/examples/sycl/*.sh
 
 # Python
 

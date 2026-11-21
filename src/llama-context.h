@@ -7,10 +7,8 @@
 #include "llama-adapter.h"
 #include "llama-impl.h"
 #include "llama-memory.h"
-#include "llama-moe-cache.h"
 
 #include "ggml-cpp.h"
-#include "ggml-opt.h"
 
 #include <array>
 #include <map>
@@ -18,7 +16,6 @@
 
 struct llama_model;
 class llama_batch_allocr;
-class llama_moe_cache;
 
 class llama_io_read_i;
 class llama_io_write_i;
@@ -213,33 +210,6 @@ struct llama_context {
 
     llama_memory_breakdown memory_breakdown() const;
 
-    //
-    // training
-    //
-
-    void opt_init(struct llama_model * model, struct llama_opt_params lopt_params);
-
-    // TODO: more flexible combinations of logical/physical batch size and context size
-    void opt_epoch(
-            ggml_opt_dataset_t      dataset,
-            ggml_opt_result_t       result_train,
-            ggml_opt_result_t       result_eval,
-            int64_t                 idata_split,
-            ggml_opt_epoch_callback callback_train,
-            ggml_opt_epoch_callback callback_eval);
-
-    void opt_epoch_iter(
-            ggml_opt_dataset_t               dataset,
-            ggml_opt_result_t                result,
-            const std::vector<llama_token> & tokens,
-            const std::vector<llama_token> & labels_sparse,
-            llama_batch_ext                & batch,
-            ggml_opt_epoch_callback          callback,
-            bool                             train,
-            int64_t                          idata_in_loop,
-            int64_t                          ndata_in_loop,
-            int64_t                          t_loop_start);
-
 private:
     //
     // output
@@ -344,7 +314,6 @@ private:
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
     llama_memory_ptr memory;
-    llama_moe_cache_ptr moe_cache;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};
@@ -433,9 +402,6 @@ private:
 
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;
-
-    // training
-    ggml_opt_context_t opt_ctx = nullptr;
 
     ggml_threadpool_t threadpool       = nullptr;
     ggml_threadpool_t threadpool_batch = nullptr;

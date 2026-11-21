@@ -30,66 +30,6 @@
 #include "ggml-cpu.h"
 #endif
 
-#ifdef GGML_USE_CUDA
-#include "ggml-cuda.h"
-#endif
-
-#ifdef GGML_USE_METAL
-#include "ggml-metal.h"
-#endif
-
-#ifdef GGML_USE_SYCL
-#include "ggml-sycl.h"
-#endif
-
-#ifdef GGML_USE_VULKAN
-#include "ggml-vulkan.h"
-#endif
-
-#ifdef GGML_USE_WEBGPU
-#include "ggml-webgpu.h"
-#endif
-
-#ifdef GGML_USE_ZDNN
-#include "ggml-zdnn.h"
-#endif
-
-#ifdef GGML_USE_OPENCL
-#include "ggml-opencl.h"
-#endif
-
-#ifdef GGML_USE_HEXAGON
-#include "ggml-hexagon.h"
-#endif
-
-#ifdef GGML_USE_BLAS
-#include "ggml-blas.h"
-#endif
-
-#ifdef GGML_USE_RPC
-#include "ggml-rpc.h"
-#endif
-
-#ifdef GGML_USE_VIRTGPU_FRONTEND
-#include "ggml-virtgpu.h"
-#endif
-
-#ifdef GGML_USE_CANN
-#include "ggml-cann.h"
-#endif
-
-#ifdef GGML_USE_ZENDNN
-#include "ggml-zendnn.h"
-#endif
-
-#ifdef GGML_USE_OPENVINO
-#include "ggml-openvino.h"
-#endif
-
-#ifdef GGML_USE_ET
-#include "ggml-et.h"
-#endif
-
 namespace fs = std::filesystem;
 
 static std::string path_str(const fs::path & path) {
@@ -117,57 +57,6 @@ struct ggml_backend_registry {
     std::vector<ggml_backend_dev_t> devices;
 
     ggml_backend_registry() {
-#ifdef GGML_USE_CUDA
-        register_backend(ggml_backend_cuda_reg());
-#endif
-#ifdef GGML_USE_METAL
-        register_backend(ggml_backend_metal_reg());
-#endif
-#ifdef GGML_USE_SYCL
-        register_backend(ggml_backend_sycl_reg());
-#endif
-#ifdef GGML_USE_VULKAN
-    // Add runtime disable check
-    if (getenv("GGML_DISABLE_VULKAN") == nullptr) {
-        register_backend(ggml_backend_vk_reg());
-    } else {
-        GGML_LOG_DEBUG("Vulkan backend disabled by GGML_DISABLE_VULKAN environment variable\n");
-    }
-#endif
-#ifdef GGML_USE_WEBGPU
-        register_backend(ggml_backend_webgpu_reg());
-#endif
-#ifdef GGML_USE_ZDNN
-        register_backend(ggml_backend_zdnn_reg());
-#endif
-#ifdef GGML_USE_VIRTGPU_FRONTEND
-        register_backend(ggml_backend_virtgpu_reg());
-#endif
-
-#ifdef GGML_USE_OPENCL
-        register_backend(ggml_backend_opencl_reg());
-#endif
-#ifdef GGML_USE_ZENDNN
-        register_backend(ggml_backend_zendnn_reg());
-#endif
-#ifdef GGML_USE_HEXAGON
-        register_backend(ggml_backend_hexagon_reg());
-#endif
-#ifdef GGML_USE_CANN
-        register_backend(ggml_backend_cann_reg());
-#endif
-#ifdef GGML_USE_BLAS
-        register_backend(ggml_backend_blas_reg());
-#endif
-#ifdef GGML_USE_RPC
-        register_backend(ggml_backend_rpc_reg());
-#endif
-#ifdef GGML_USE_OPENVINO
-        register_backend(ggml_backend_openvino_reg());
-#endif
-#ifdef GGML_USE_ET
-        register_backend(ggml_backend_et_reg());
-#endif
 #ifdef GGML_USE_CPU
         register_backend(ggml_backend_cpu_reg());
 #endif
@@ -183,14 +72,20 @@ struct ggml_backend_registry {
         }
     }
 
-    void register_backend(ggml_backend_reg_t reg, dl_handle_ptr handle = nullptr) {
-        if (!reg) {
-            return;
+    bool register_backend(ggml_backend_reg_t reg, dl_handle_ptr handle = nullptr) {
+        if (!reg || std::strcmp(ggml_backend_reg_name(reg), "CPU") != 0) {
+            return false;
+        }
+        const size_t n_devices = ggml_backend_reg_dev_count(reg);
+        for (size_t i = 0; i < n_devices; i++) {
+            if (ggml_backend_dev_type(ggml_backend_reg_dev_get(reg, i)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                return false;
+            }
         }
 
         for (auto & entry : backends) {
             if (entry.reg == reg) {
-                return;
+                return true;
             }
         }
 
@@ -199,12 +94,16 @@ struct ggml_backend_registry {
             __func__, ggml_backend_reg_name(reg), ggml_backend_reg_dev_count(reg));
 #endif
         backends.push_back({ reg, std::move(handle) });
-        for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); i++) {
+        for (size_t i = 0; i < n_devices; i++) {
             register_device(ggml_backend_reg_dev_get(reg, i));
         }
+        return true;
     }
 
     void register_device(ggml_backend_dev_t device) {
+        if (!device || ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return;
+        }
         for (auto & dev : devices) {
             if (dev == device) {
                 return;
@@ -256,9 +155,13 @@ struct ggml_backend_registry {
             return nullptr;
         }
 
-        GGML_LOG_INFO("%s: loaded %s backend from %s\n", __func__, ggml_backend_reg_name(reg), path_str(path).c_str());
-
-        register_backend(reg, std::move(handle));
+        if (!register_backend(reg, std::move(handle))) {
+            if (!silent) {
+                GGML_LOG_ERROR("%s: only the CPU backend is supported (%s)\n", __func__, path_str(path).c_str());
+            }
+            return nullptr;
+        }
+        GGML_LOG_INFO("%s: loaded CPU backend from %s\n", __func__, path_str(path).c_str());
 
         return reg;
     }
@@ -380,9 +283,7 @@ ggml_backend_t ggml_backend_init_by_type(enum ggml_backend_dev_type type, const 
 }
 
 ggml_backend_t ggml_backend_init_best(void) {
-    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-    dev = dev ? dev : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
-    dev = dev ? dev : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (!dev) {
         return nullptr;
     }
@@ -398,6 +299,7 @@ void ggml_backend_unload(ggml_backend_reg_t reg) {
     get_reg().unload_backend(reg, true);
 }
 
+#ifdef GGML_BACKEND_DL
 static fs::path get_executable_path() {
 #if defined(__APPLE__)
     // get executable path
@@ -564,36 +466,23 @@ static ggml_backend_reg_t ggml_backend_load_best(const char * name, bool silent,
     return get_reg().load_backend(best_path, silent);
 }
 
+#endif // GGML_BACKEND_DL
+
 void ggml_backend_load_all() {
     ggml_backend_load_all_from_path(nullptr);
 }
 
 void ggml_backend_load_all_from_path(const char * dir_path) {
+#ifdef GGML_BACKEND_DL
 #ifdef NDEBUG
-    bool silent = true;
+    const bool silent = true;
 #else
-    bool silent = false;
+    const bool silent = false;
 #endif
-
-    ggml_backend_load_best("blas",     silent, dir_path);
-    ggml_backend_load_best("zendnn",   silent, dir_path);  // AMD ZenDNN backend
-    ggml_backend_load_best("zdnn",     silent, dir_path);  // IBM zDNN backend
-    ggml_backend_load_best("cann",     silent, dir_path);
-    ggml_backend_load_best("cuda",     silent, dir_path);
-    ggml_backend_load_best("hip",      silent, dir_path);
-    ggml_backend_load_best("metal",    silent, dir_path);
-    ggml_backend_load_best("rpc",      silent, dir_path);
-    ggml_backend_load_best("sycl",     silent, dir_path);
-    ggml_backend_load_best("vulkan",   silent, dir_path);
-    ggml_backend_load_best("virtgpu",  silent, dir_path);
-    ggml_backend_load_best("opencl",   silent, dir_path);
-    ggml_backend_load_best("hexagon",  silent, dir_path);
-    ggml_backend_load_best("musa",     silent, dir_path);
-    ggml_backend_load_best("openvino", silent, dir_path);
-    ggml_backend_load_best("cpu",      silent, dir_path);
-    // check the environment variable GGML_BACKEND_PATH to load an out-of-tree backend
-    const char * backend_path = std::getenv("GGML_BACKEND_PATH");
-    if (backend_path) {
-        ggml_backend_load(backend_path);
+    if (ggml_backend_reg_by_name("CPU") == nullptr) {
+        ggml_backend_load_best("cpu", silent, dir_path);
     }
+#else
+    GGML_UNUSED(dir_path);
+#endif
 }

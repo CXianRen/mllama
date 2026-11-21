@@ -51,6 +51,7 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
 struct tensor_data_params {
     size_t seed;
     float  stdev;
+    gguf_context * fixture = nullptr;
 };
 
 // fills the values of one tensor, the name carries whatever the property needs
@@ -164,6 +165,9 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
         ggml_backend_tensor_set(tensor, tmp16.data(), 0, ggml_nbytes(tensor));
     } else {
         GGML_ABORT("fatal error");
+    }
+    if (params.fixture && gguf_find_tensor(params.fixture, tensor->name) < 0) {
+        gguf_add_tensor(params.fixture, tensor);
     }
 }
 
@@ -871,7 +875,8 @@ static llama_model_ptr get_model(
         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const float stdev,
         const std::vector<ggml_backend_dev_t> & devs,
         const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER,
-        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr) {
+        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr,
+        gguf_context * fixture = nullptr) {
     GGML_ASSERT((gguf_ctx == nullptr) != (file == nullptr));
     llama_model_params model_params = llama_model_default_params();
     model_params.progress_callback = silent_model_load_progress;
@@ -881,7 +886,7 @@ static llama_model_ptr get_model(
     model_params.split_mode = split_mode;
     model_params.tensor_buft_overrides = tensor_buft_overrides;
 
-    tensor_data_params tensor_params = { seed, stdev };
+    tensor_data_params tensor_params = { seed, stdev, fixture };
     llama_model_ptr model(gguf_ctx != nullptr ?
         llama_model_init_from_user(gguf_ctx, set_tensor_data, &tensor_params, model_params) :
         llama_model_load_from_file_ptr(file, model_params));
@@ -891,11 +896,22 @@ static llama_model_ptr get_model(
     return model;
 }
 
+static void write_fixture(gguf_context * metadata, size_t seed, float stdev, const std::string & path) {
+    gguf_context_ptr fixture(gguf_init_empty());
+    gguf_set_kv(fixture.get(), metadata);
+
+    // The CPU model owns the tensor storage until the file is written.
+    const llama_model_ptr model = get_model(metadata, nullptr, seed, stdev, {}, LLAMA_SPLIT_MODE_LAYER, nullptr, fixture.get());
+    if (!gguf_write_to_file(fixture.get(), path.c_str(), false)) {
+        throw std::runtime_error("failed to write model fixture: " + path);
+    }
+}
+
 static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const float stdev,
         const std::vector<ggml_backend_dev_t> & devs,
         const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false,
-        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr, const size_t moe_cache_size = 0) {
+        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr) {
     llama_model_ptr model = get_model(gguf_ctx, file, seed, stdev, devs, split_mode, tensor_buft_overrides);
 
     llama_context_params ctx_params = llama_context_default_params();
@@ -905,12 +921,6 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
     if (!encode) {
         ctx_params.n_ubatch = 64;
     }
-    if (moe_cache_size > 0) {
-        // the MoE cache is only used for small ubatches
-        ctx_params.moe_cache_size = moe_cache_size;
-        ctx_params.n_ubatch = 2;
-    }
-
     llama_context_ptr lctx(llama_init_from_model(model.get(), ctx_params));
     if (!lctx) {
         throw std::runtime_error("failed to create llama context");
@@ -1216,22 +1226,6 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_DEEPSEEK2OCR) {
         return false;
     }
-    // FIXME: these hit scheduler/view-backed-output issues with WebGPU on CI.
-#ifdef GGML_USE_WEBGPU
-    if (arch == LLM_ARCH_DEEPSEEK32 || arch == LLM_ARCH_GLM_DSA || arch == LLM_ARCH_DOTS3NOTE || arch == LLM_ARCH_QWEN4EXP ||
-            arch == LLM_ARCH_HY_V4) {
-        return false;
-    }
-#endif // GGML_USE_WEBGPU
-
-    // FIXME: jamba produces incorrect output (~0.55 NMSE vs CPU) on the HIP
-    // backend on RDNA3.5 (gfx1151); the SSM kernels need investigation.
-#ifdef GGML_USE_HIP
-    if (arch == LLM_ARCH_JAMBA) {
-        return false;
-    }
-#endif // GGML_USE_HIP
-
     return true;
 }
 
@@ -1275,15 +1269,14 @@ static int save_models(const std::string & arch_filter, const size_t seed, const
             if (!moe && moe_mandatory(arch)) {
                 continue;
             }
-            if (!llama_arch_supports_save(arch) || !arch_supported(arch)) {
+            if (!arch_supported(arch)) {
                 LOG_INF("%s: %s model (%s) is unsupported, skipping\n", __func__, llama_arch_name(arch), moe ? "MoE" : "dense");
                 continue;
             }
             gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
-            llama_model_ptr model = get_model(gguf_ctx.get(), nullptr, seed, stdev, {});
             const std::string path = dir + "/" + llama_arch_name(arch) + (moe ? "-moe.gguf" : "-dense.gguf");
             LOG_INF("%s: '%s %s' -> %s ...", __func__, llama_arch_name(arch), moe ? "MoE" : "dense", path.c_str());
-            llama_model_save_to_file(model.get(), path.c_str());
+            write_fixture(gguf_ctx.get(), seed, stdev, path);
             const std::uintmax_t size = std::filesystem::file_size(path);
             LOG_CNT(" (%.2f MB)\n", (double) size / (1024.0 * 1024.0));
         }
@@ -1334,10 +1327,9 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
         std::string                     label;
         llama_split_mode                split_mode;
         bool                            host_experts; // keep the experts in host memory, see host_experts_test
-        size_t                          moe_cache_size;
 
-        device_config(std::vector<ggml_backend_dev_t> devs, std::string name, llama_split_mode split_mode, bool host_experts = false, size_t moe_cache_size = 0)
-            : devs(std::move(devs)), label(std::move(name)), split_mode(split_mode), host_experts(host_experts), moe_cache_size(moe_cache_size) {}
+        device_config(std::vector<ggml_backend_dev_t> devs, std::string name, llama_split_mode split_mode, bool host_experts = false)
+            : devs(std::move(devs)), label(std::move(name)), split_mode(split_mode), host_experts(host_experts) {}
     };
 
     const llama_model_tensor_buft_override host_experts_overrides[] = {
@@ -1376,20 +1368,6 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
             max_device_label_length = std::max(max_device_label_length, dev_configs.back().label.length());
         }
 
-        // the ops that use the host experts run on a GPU and read the experts from a cache
-        // the cache has only a few slots (4 for 288 KiB experts), so the experts are evicted and uploaded again
-        if (!devices_meta.empty()) {
-            const enum ggml_backend_dev_type type = ggml_backend_dev_type(devices_meta[0]);
-            if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
-                dev_configs.emplace_back(std::vector<ggml_backend_dev_t>{devices_meta[0]}, "MoE cache", LLAMA_SPLIT_MODE_LAYER, true, 1536*1024);
-                max_device_label_length = std::max(max_device_label_length, dev_configs.back().label.length());
-                // each GPU caches the layers assigned to it
-                if (devices_meta.size() > 1) {
-                    dev_configs.emplace_back(devices_meta, "MoE cache, layer split", LLAMA_SPLIT_MODE_LAYER, true, 1536*1024);
-                    max_device_label_length = std::max(max_device_label_length, dev_configs.back().label.length());
-                }
-            }
-        }
     }
 
     size_t max_arch_name_length = 0;
@@ -1469,7 +1447,7 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                     }
                     if (dc.split_mode != LLAMA_SPLIT_MODE_TENSOR || llama_arch_supports_sm_tensor(arch)) {
                         test_executed = true;
-                        model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, dc.devs, dc.split_mode, encode, overrides, dc.moe_cache_size);
+                        model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, dc.devs, dc.split_mode, encode, overrides);
                         logits_dev = get_logits(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens, encode);
                         const double nmse_val = nmse(logits_cpu, logits_dev);
                         snprintf(nmse_str, sizeof(nmse_str), "(%.2e)", nmse_val);
@@ -1535,18 +1513,16 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                         }
                     }
 
-                    if (llama_arch_supports_save(arch) && dc.split_mode != LLAMA_SPLIT_MODE_TENSOR) {
+                    if (dc.split_mode != LLAMA_SPLIT_MODE_TENSOR) {
                         test_executed = true;
                         GGML_ASSERT(model_and_ctx_dev.first && model_and_ctx_dev.second);
-                        // FIXME: when adding a tensor to a gguf_context a copy is made, this changes the pointer which the meta backend
-                        //     in turn uses to map the tensors to their simple equivalents - this is fundamentally incompatible
                         const std::string path = get_tmp_gguf_path();
-                        llama_model_save_to_file(model_and_ctx_dev.first.get(), path.c_str());
+                        write_fixture(gguf_ctx.get(), seed, stdev, path);
                         FILE * file = fopen(path.c_str(), "rb");
                         GGML_ASSERT(file != nullptr);
 
                         {
-                            auto model_and_ctx_roundtrip = get_model_and_ctx(nullptr, file, seed, stdev, dc.devs, dc.split_mode, encode, overrides, dc.moe_cache_size);
+                            auto model_and_ctx_roundtrip = get_model_and_ctx(nullptr, file, seed, stdev, dc.devs, dc.split_mode, encode, overrides);
                             const std::vector<float> logits_roundtrip = get_logits(
                                 model_and_ctx_roundtrip.first.get(), model_and_ctx_roundtrip.second.get(), tokens, encode);
                             status_roundtrip = "\033[1;32mOK\033[0m";

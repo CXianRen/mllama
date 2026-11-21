@@ -7,7 +7,7 @@
 #include <vector>
 
 static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
-    { LLM_ARCH_CLIP,             "clip"             }, // dummy, only used by llama-quantize
+    { LLM_ARCH_CLIP,             "clip"             },
     { LLM_ARCH_LLAMA,            "llama"            },
     { LLM_ARCH_LLAMA4,           "llama4"           },
     { LLM_ARCH_DECI,             "deci"             },
@@ -1408,12 +1408,7 @@ std::string LLM_TN_IMPL::str() const {
 }
 
 std::vector<llm_arch> llm_arch_all() {
-    std::vector<llm_arch> ret;
-    ret.reserve(LLM_ARCH_NAMES.size());
-    for (const auto & [arch, _] : LLM_ARCH_NAMES) {
-        ret.push_back(arch);
-    }
-    return ret;
+    return { LLM_ARCH_GLM5_NEXT };
 }
 
 const char * llm_arch_name(llm_arch arch) {
@@ -1585,23 +1580,6 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
         case LLM_ARCH_KIMI_K31:
         case LLM_ARCH_QWEN3TTS:
         case LLM_ARCH_LIMITE:
-            return false;
-        default:
-            return true;
-    }
-}
-
-bool llama_arch_supports_save(llm_arch arch) {
-    switch (arch) {
-        case LLM_ARCH_SENSENOVA_U1:
-        case LLM_ARCH_GEMMA3N:
-        case LLM_ARCH_BITNET:
-        case LLM_ARCH_T5:
-        case LLM_ARCH_APERTUS:
-        case LLM_ARCH_STEP35:
-        case LLM_ARCH_CLEF: // the head tensors are not saved
-        case LLM_ARCH_INKLING2_LOOP: // the loop tensors are not saved and the cache slots are expanded at load
-        case LLM_ARCH_VLLM_DECISION2:
             return false;
         default:
             return true;

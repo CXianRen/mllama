@@ -5,7 +5,6 @@
 #include "common.h"
 #include "json-schema-to-grammar.h"
 #include "log.h"
-#include "parsers/parsers.h"
 #include "peg-parser.h"
 
 #include <stdexcept>
@@ -14,6 +13,29 @@
 using json = common_json;
 
 namespace autoparser {
+
+static void foreach_function(const json & tools, const std::function<void(size_t, const json &)> & fn) {
+    for (size_t i = 0; i < tools.size(); i++) {
+        const auto & tool = tools[i];
+        if (!tool.contains("type") || tool.at("type") != "function" || !tool.contains("function")) {
+            LOG_INF("Skipping tool without function: %s", tool.dump(2).c_str());
+            continue;
+        }
+        fn(i, tool);
+    }
+}
+
+static void foreach_parameter(const json & function, const std::function<void(size_t, const common_chat_schema_property &, const common_chat_schema_document_ptr &)> & fn) {
+    auto         params = common_chat_tool_parameters(function);
+    auto         doc    = std::make_shared<const common_chat_schema_document>(common_chat_schema_from_json(params));
+    const auto * object = dynamic_cast<const common_chat_schema_object *>(doc->root.get());
+    if (!object) {
+        return;
+    }
+    for (size_t i = 0; i < object->properties.size(); i++) {
+        fn(i, object->properties[i], doc);
+    }
+}
 
 parser_build_context::parser_build_context(common_chat_peg_builder & p, const generation_params & inputs) :
     p(p),
@@ -186,7 +208,7 @@ common_peg_parser analyze_tools::build_parser(parser_build_context & ctx) const 
             return build_tool_parser_tag_tagged(ctx);
         default:
             LOG_ERR("[ERROR] Template seems to support tool calls, but failed to determine tool format. Tool calling will not work properly. "
-                "Check for a fixed template for your model in the models/templates directory of your llama.cpp installation or "
+                "Pass a compatible template with --chat-template-file or "
                 "report an issue at https://github.com/ggml-org/llama.cpp/issues\n");
             return ctx.p.eps();
     }

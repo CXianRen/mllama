@@ -14,13 +14,7 @@
 #    include "hbm.h"
 #endif
 
-#ifdef GGML_USE_CPU_KLEIDIAI
-#    include "kleidiai/kleidiai.h"
-#endif
 
-#ifdef GGML_USE_CPU_RISCV64_SPACEMIT
-#    include "spacemit/ime.h"
-#endif
 
 #if defined(_WIN32)
 #    define WIN32_LEAN_AND_MEAN
@@ -49,17 +43,7 @@ std::vector<ggml_backend_buffer_type_t> & ggml_backend_cpu_get_extra_buffer_type
         }
 #endif
 
-#ifdef GGML_USE_CPU_RISCV64_SPACEMIT
-        if (ggml_backend_cpu_riscv64_spacemit_buffer_type()) {
-            bufts.push_back(ggml_backend_cpu_riscv64_spacemit_buffer_type());
-        }
-#endif
 
-#ifdef GGML_USE_CPU_KLEIDIAI
-        if (ggml_backend_cpu_kleidiai_buffer_type()) {
-            bufts.push_back(ggml_backend_cpu_kleidiai_buffer_type());
-        }
-#endif
 
 #ifdef GGML_USE_CPU_REPACK
         if (ggml_backend_cpu_repack_buffer_type()) {
@@ -583,50 +567,6 @@ static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t r
         if (ggml_cpu_has_amx_int8()) {
             features.push_back({ "AMX_INT8", "1" });
         }
-        if (ggml_cpu_has_neon()) {
-            features.push_back({ "NEON", "1" });
-        }
-        if (ggml_cpu_has_arm_fma()) {
-            features.push_back({ "ARM_FMA", "1" });
-        }
-        if (ggml_cpu_has_fp16_va()) {
-            features.push_back({ "FP16_VA", "1" });
-        }
-        if (ggml_cpu_has_matmul_int8()) {
-            features.push_back({ "MATMUL_INT8", "1" });
-        }
-        if (ggml_cpu_has_sve()) {
-            features.push_back({ "SVE", "1" });
-        }
-        if (ggml_cpu_has_dotprod()) {
-            features.push_back({ "DOTPROD", "1" });
-        }
-        if (ggml_cpu_get_sve_cnt() > 0) {
-            static std::string sve_cnt = std::to_string(ggml_cpu_get_sve_cnt());
-            features.push_back({ "SVE_CNT", sve_cnt.c_str() });
-        }
-        if (ggml_cpu_has_sme()) {
-            features.push_back({ "SME", "1" });
-        }
-        if (ggml_cpu_has_sme2()) {
-            features.push_back({ "SME2", "1" });
-        }
-        if (ggml_cpu_has_riscv_v()) {
-            features.push_back({ "RISCV_V", "1" });
-        }
-        if (ggml_cpu_get_rvv_vlen() > 0) {
-            static std::string rvv_vlen = std::to_string(ggml_cpu_get_rvv_vlen());
-            features.push_back({ "RVV_VLEN", rvv_vlen.c_str() });
-        }
-        if (ggml_cpu_has_vsx()) {
-            features.push_back({ "VSX", "1" });
-        }
-        if (ggml_cpu_has_vxe()) {
-            features.push_back({ "VXE", "1" });
-        }
-        if (ggml_cpu_has_wasm_simd()) {
-            features.push_back({ "WASM_SIMD", "1" });
-        }
         if (ggml_cpu_has_llamafile()) {
             features.push_back({ "LLAMAFILE", "1" });
         }
@@ -638,9 +578,6 @@ static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t r
     #endif
     #ifdef GGML_USE_OPENMP
         features.push_back({ "OPENMP", "1" });
-    #endif
-    #ifdef GGML_USE_CPU_KLEIDIAI
-        features.push_back({ "KLEIDIAI", "1" });
     #endif
     #ifdef GGML_USE_CPU_REPACK
         features.push_back({ "REPACK", "1" });

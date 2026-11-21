@@ -263,7 +263,6 @@ void ggml_vec_dot_q4_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
-// TODO: add WASM SIMD
 void ggml_vec_dot_q4_1_q8_1_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK8_1;
     const int nb = n / qk;
@@ -379,7 +378,7 @@ void ggml_vec_dot_f8_e4m3_f32(int n, float * GGML_RESTRICT s, size_t bs, const v
 
     float sumf = 0.0f;
     int pos = 0;
-#if defined(GGML_SIMD) && !defined(__ARM_FEATURE_SVE) && !defined(__riscv_v_intrinsic)
+#if defined(GGML_SIMD)
     GGML_F32_VEC sum[GGML_F32_ARR] = { GGML_F32_VEC_ZERO };
     const int np = n - n % GGML_F32_STEP;
     for (; pos < np; pos += GGML_F32_STEP) {
@@ -684,7 +683,7 @@ void ggml_vec_dot_q3_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     // manually vectorized version above. Every other version I tried would run at least 4 times slower.
     // The ideal situation would be if we could just write the code once, and the compiler would
     // automatically produce the best possible set of machine instructions, instead of us having to manually
-    // write vectorized versions for AVX, ARM_NEON, etc.
+    // write vectorized versions for x86 SIMD
 
     int8_t  aux8[QK_K];
     int16_t aux16[8];

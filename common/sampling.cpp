@@ -1,7 +1,6 @@
 #include "sampling.h"
 
 #include "common.h"
-#include "fit.h"
 #include "log.h"
 #include "reasoning-budget.h"
 
@@ -222,11 +221,7 @@ struct common_sampler * common_sampler_init(
 
     const std::string & grammar_str = common_grammar_value(params.grammar);
     if (grammar_str.compare(0, 11, "%llguidance") == 0) {
-#ifdef LLAMA_USE_LLGUIDANCE
-        grmr = llama_sampler_init_llg(vocab, "lark", grammar_str.c_str());
-#else
-        throw std::runtime_error("failed to parse grammar: llguidance is not enabled");
-#endif // LLAMA_USE_LLGUIDANCE
+        throw std::runtime_error("LLGuidance grammar is unsupported");
     } else {
         std::vector<std::string> trigger_patterns;
         std::vector<llama_token> trigger_tokens;
@@ -598,8 +593,6 @@ void common_perf_print(const struct llama_context * ctx, const struct common_sam
         LOG_INF("%s: unaccounted time = %10.2f ms / %5.1f %%      (total - sampling - prompt eval - eval) / (total)\n", __func__, t_unacc_ms, t_unacc_pc);
         LOG_INF("%s:    graphs reused = %10d\n", __func__, data.n_reused);
         LOG_INF("%s:   graph reallocs = %10d    / %5d        (same size) / (changed size)\n", __func__, data.n_reallocs_same, data.n_reallocs_diff);
-
-        common_memory_breakdown_print(ctx);
     }
 }
 

@@ -74,9 +74,13 @@ void llama_model_glm5_next::load_arch_tensors(llama_model_loader & ml) {
     output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, 0);
 
     for (int i = 0; i < n_layer_all; ++i) {
-        auto & layer = layers[i];
-
         const bool is_nextn = i >= n_layer;
+        if (is_nextn && !ml.load_mtp) {
+            ml.skip_layer_tensors(i);
+            continue;
+        }
+
+        auto & layer = layers[i];
         const int flags = is_nextn ? mtp_flags : trunk_flags;
 
         layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, flags);

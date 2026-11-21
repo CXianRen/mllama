@@ -4,7 +4,6 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include "ggml-backend.h"
-#include "ggml-opt.h"
 #include "gguf.h"
 
 #include <stddef.h>
@@ -406,9 +405,6 @@ extern "C" {
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
-        size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
-        float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded [EXPERIMENTAL]
-
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted
         // currently works only with CPU execution
@@ -438,36 +434,6 @@ extern "C" {
         struct llama_context * ctx_other;
     };
 
-    struct llama_model_tensor_override {
-        const char * pattern;
-        enum ggml_type type;
-    };
-
-    struct llama_model_imatrix_data {
-        const char * name;
-        const float * data;
-        size_t size;
-    };
-
-    // model quantization parameters
-    typedef struct llama_model_quantize_params {
-        int32_t nthread;                                            // number of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()
-        enum llama_ftype ftype;                                     // quantize to this llama_ftype
-        enum ggml_type output_tensor_type;                          // output tensor type
-        enum ggml_type token_embedding_type;                        // token embeddings tensor type
-        bool allow_requantize;                                      // allow quantizing non-f32/f16 tensors
-        bool quantize_output_tensor;                                // quantize output.weight
-        bool only_copy;                                             // only copy tensors - ftype, allow_requantize and quantize_output_tensor are ignored
-        bool pure;                                                  // quantize all tensors to the default type
-        bool keep_split;                                            // quantize to the same number of shards
-        bool dry_run;                                               // calculate and show the final quantization size without performing quantization
-        const struct llama_model_imatrix_data * imatrix;            // pointer to importance matrix data
-        const struct llama_model_kv_override * kv_overrides;        // pointer to kv overrides
-        const struct llama_model_tensor_override * tt_overrides;    // pointer to tensor overrides
-        const int32_t * prune_layers;                               // pointer to layer indices to prune
-        size_t max_buf_size;                                        // max bytes of tensor rows kept in memory at once, 0 = default (8 GiB)
-    } llama_model_quantize_params;
-
     typedef struct llama_logit_bias {
         llama_token token;
         float bias;
@@ -493,7 +459,6 @@ extern "C" {
     LLAMA_API struct llama_model_params          llama_model_default_params(void);
     LLAMA_API struct llama_context_params        llama_context_default_params(void);
     LLAMA_API struct llama_sampler_chain_params  llama_sampler_chain_default_params(void);
-    LLAMA_API struct llama_model_quantize_params llama_model_quantize_default_params(void);
 
     // Initialize the llama + ggml backend
     // Call once at the start of the program
@@ -545,10 +510,6 @@ extern "C" {
                              const char ** paths,
                                  size_t    n_paths,
               struct llama_model_params    params);
-
-    LLAMA_API void llama_model_save_to_file(
-            const struct llama_model * model,
-                        const char * path_model);
 
     LLAMA_API void llama_model_free(struct llama_model * model);
 
@@ -677,12 +638,6 @@ extern "C" {
 
     // Returns true if the model is diffusion-based (like LLaDA, Dream, etc.)
     LLAMA_API bool llama_model_is_diffusion(const struct llama_model * model);
-
-    // Returns 0 on success
-    LLAMA_API uint32_t llama_model_quantize(
-            const char * fname_inp,
-            const char * fname_out,
-            const llama_model_quantize_params * params);
 
     //
     // NextN / speculative draft model queries
@@ -1725,39 +1680,6 @@ extern "C" {
     LLAMA_API struct llama_perf_sampler_data llama_perf_sampler      (const struct llama_sampler * chain);
     LLAMA_API void                           llama_perf_sampler_print(const struct llama_sampler * chain);
     LLAMA_API void                           llama_perf_sampler_reset(      struct llama_sampler * chain);
-
-    //
-    // training
-    //
-
-    // function that returns whether or not a given tensor contains trainable parameters
-    typedef bool (*llama_opt_param_filter)(const struct ggml_tensor * tensor, void * userdata);
-
-    // always returns true
-    LLAMA_API bool llama_opt_param_filter_all(const struct ggml_tensor * tensor, void * userdata);
-
-    struct llama_opt_params {
-        uint32_t n_ctx_train; // assumed context size post training, use context size specified in llama_context if 0
-
-        llama_opt_param_filter param_filter; // callback for determining which tensors contain trainable parameters
-        void * param_filter_ud;              // userdata for determining which tensors contain trainable parameters
-
-        ggml_opt_get_optimizer_params get_opt_pars; // callback for calculating optimizer parameters
-        void * get_opt_pars_ud;                     // userdata for calculating optimizer parameters
-
-        enum ggml_opt_optimizer_type optimizer_type;
-    };
-
-    LLAMA_API void llama_opt_init(struct llama_context * lctx, struct llama_model * model, struct llama_opt_params lopt_params);
-
-    LLAMA_API void llama_opt_epoch(
-            struct llama_context    * lctx,
-            ggml_opt_dataset_t        dataset,
-            ggml_opt_result_t         result_train,
-            ggml_opt_result_t         result_eval,
-            int64_t                   idata_split,
-            ggml_opt_epoch_callback   callback_train,
-            ggml_opt_epoch_callback   callback_eval);
 
 #ifdef __cplusplus
 }

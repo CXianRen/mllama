@@ -1484,6 +1484,15 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     return tensor;
 }
 
+void llama_model_loader::skip_layer_tensors(int layer) {
+    const std::string prefix = "blk." + std::to_string(layer) + ".";
+    for (auto it = weights_map.lower_bound(prefix);
+         it != weights_map.end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it) {
+        size_data -= ggml_nbytes(it->second.tensor);
+        ++n_created;
+    }
+}
+
 void llama_model_loader::done_getting_tensors(bool partial) const {
     if (n_created > n_tensors) {
         throw std::runtime_error(format("%s: too many tensors created; expected %d, got %d", __func__, n_tensors, n_created));

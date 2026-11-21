@@ -86,7 +86,7 @@ Reference: `examples/model-conversion/README.md`.
 2. Run logits verification (original vs converted). If this model is a new version of an already-supported family, verify the *previous* version still passes logits verification first - numerical differences may be pre-existing, not caused by the new work. The tools to perform full logits validation are available in `examples/model-conversion`.
 3. Quantize (including QAT variants if relevant) and re-verify.
 4. Run perplexity evaluation (simple and full).
-5. Sanity-check across `tools/cli`, `tools/completion`, `tools/imatrix`, `tools/quantize`, and `tools/server`.
+5. Sanity-check across `tools/cli`, `tools/completion`, `tools/imatrix`, and `tools/server`.
 6. CPU backend first; other backends (CUDA, Metal, ...) can be separate follow-up PRs per `CONTRIBUTING.md`.
 7. Re-review every changed file against the coding/naming guidelines in `AGENTS.md` (and `CONTRIBUTING.md`'s "Coding guidelines"/"Naming guidelines" sections) - this is a separate pass from functional testing and is just as important: no forced line-wrapping, no unicode punctuation, minimal/non-redundant comments, `snake_case` naming (`kebab-case` for file names), matching indentation/brace style, etc.
 

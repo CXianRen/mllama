@@ -7,11 +7,9 @@
 
 #include "../src/llama-ext.h"
 
-#include "fit.h"
 #include "log.h"
 #include "llama.h"
 #include "sampling.h"
-#include "speculative.h"
 #include "unicode.h"
 
 #include <algorithm>
@@ -963,68 +961,6 @@ void common_set_env(const std::string & name, const std::string & value) {
 #endif
 }
 
-#if !defined(_WIN32)
-static std::filesystem::path get_home_directory() {
-    std::filesystem::path home = common_get_env("HOME");
-    if (!home.empty()) {
-        return home;
-    }
-    const struct passwd * pw = getpwuid(getuid());
-    if (!pw || !pw->pw_dir || !*pw->pw_dir) {
-        throw std::runtime_error("Failed to find $HOME directory");
-    }
-    return pw->pw_dir;
-}
-#endif
-
-std::filesystem::path fs_get_cache_directory() {
-    std::filesystem::path cache_directory = common_get_env("LLAMA_CACHE");
-    if (!cache_directory.empty()) {
-        return cache_directory;
-    }
-#if defined(_WIN32)
-    cache_directory = common_get_env("LOCALAPPDATA");
-    if (cache_directory.empty()) {
-        throw std::runtime_error("Failed to find %LOCALAPPDATA% directory");
-    }
-#elif defined(__APPLE__)
-    cache_directory = get_home_directory() / "Library/Caches";
-#else
-    cache_directory = common_get_env("XDG_CACHE_HOME");
-    if (cache_directory.empty()) {
-        cache_directory = get_home_directory() / ".cache";
-    }
-#endif
-    return cache_directory / "llama.cpp";
-}
-
-std::filesystem::path fs_get_config_directory() {
-    std::filesystem::path config_directory;
-#if defined(_WIN32)
-    config_directory = common_get_env("APPDATA");
-    if (config_directory.empty()) {
-        throw std::runtime_error("Failed to find %APPDATA% directory");
-    }
-#else
-    config_directory = common_get_env("XDG_CONFIG_HOME");
-    if (config_directory.empty()) {
-        config_directory = get_home_directory() / ".config";
-    }
-#endif
-    return config_directory / "llama.cpp";
-}
-
-std::filesystem::path fs_get_cache_file(const std::string & filename) {
-    GGML_ASSERT(filename.find(DIRECTORY_SEPARATOR) == std::string::npos);
-    const std::filesystem::path cache_directory = fs_get_cache_directory();
-    std::error_code ec;
-    common_create_directories(cache_directory, ec);
-    if (ec) {
-        throw std::runtime_error("failed to create cache directory: " + cache_directory.string());
-    }
-    return cache_directory / filename;
-}
-
 //
 // TTY utils
 //
@@ -1153,132 +1089,10 @@ struct common_init_result::impl {
     std::vector<llama_sampler_seq_config> samplers_seq_config;
 };
 
-static const std::map<common_decision_type, std::string> COMMON_DECISION_TYPE_NAMES = {
-    { COMMON_DECISION_TYPE_OPENJEV,        "openjev"       },
-    { COMMON_DECISION_TYPE_LEV,            "lev"           },
-    { COMMON_DECISION_TYPE_KEV,            "kev"           },
-    { COMMON_DECISION_TYPE_NIMBLE,         "nimble"        },
-    { COMMON_DECISION_TYPE_LAYA,           "laya"          },
-    { COMMON_DECISION_TYPE_CLEF,           "clef"          },
-    { COMMON_DECISION_TYPE_PPLX_DECIDER,   "pplx-decider"  },
-    { COMMON_DECISION_TYPE_VLLM_DECISION2, "vllm-decision2" },
-    { COMMON_DECISION_TYPE_VLLM_D3,        "vllm-d3"        },
-    { COMMON_DECISION_TYPE_LFM2_D1,        "lfm2-d1"       },
-    { COMMON_DECISION_TYPE_LFM2_D1_OMNI,   "lfm2-d1-omni"  },
-    { COMMON_DECISION_TYPE_GRANITE_SWITCH, "granite-switch"},
-    { COMMON_DECISION_TYPE_H2O_LIGHTNING,  "h2o-lightning" },
-    { COMMON_DECISION_TYPE_MINICPM_OCR_JEV, "openbmb-minicpm-ocr-jev" },
-    { COMMON_DECISION_TYPE_LFM3_D1,        "lfm3-d1"       },
-    { COMMON_DECISION_TYPE_LFM3_D1_OMNI,   "lfm3-d1-omni"  },
-    // for future models, ALWAYS add org name prefix to avoid name collisions, e.g. "orgname-modelname"
-};
-
-static common_decision_type common_decision_type_from_string(const std::string & str) {
-    for (const auto & pair : COMMON_DECISION_TYPE_NAMES) {
-        if (pair.second == str) {
-            return pair.first;
-        }
-    }
-    return COMMON_DECISION_TYPE_UNKNOWN;
-}
-
-common_decision_type common_get_decision_type(const struct llama_model * model) {
-    char buf[64];
-    if (llama_model_meta_val_str(model, "general.architecture", buf, sizeof(buf)) < 0) {
-        return COMMON_DECISION_TYPE_NONE;
-    }
-    const std::string key = std::string(buf) + ".decision.type";
-    if (llama_model_meta_val_str(model, key.c_str(), buf, sizeof(buf)) < 0) {
-        return COMMON_DECISION_TYPE_NONE;
-    }
-    return common_decision_type_from_string(buf);
-}
-
-common_gguf_info common_get_gguf_info(const std::string & fname) {
-    common_gguf_info info;
-
-    struct gguf_init_params gguf_params = {
-        /* .no_alloc = */ true,
-        /* .ctx      = */ nullptr,
-    };
-
-    gguf_context_ptr gguf_ctx(gguf_init_from_file(fname.c_str(), gguf_params));
-    if (!gguf_ctx) {
-        return info; // missing or unreadable file
-    }
-
-    const int64_t arch_id = gguf_find_key(gguf_ctx.get(), "general.architecture");
-    if (arch_id < 0 || gguf_get_kv_type(gguf_ctx.get(), arch_id) != GGUF_TYPE_STRING) {
-        return info; // no architecture in the metadata
-    }
-    const std::string arch = gguf_get_val_str(gguf_ctx.get(), arch_id);
-    if (arch.empty()) {
-        return info;
-    }
-
-    const int64_t type_id = gguf_find_key(gguf_ctx.get(), (arch + ".decision.type").c_str());
-    if (type_id < 0) {
-        info.decision_type = COMMON_DECISION_TYPE_NONE;
-    } else if (gguf_get_kv_type(gguf_ctx.get(), type_id) == GGUF_TYPE_STRING) {
-        info.decision_type = common_decision_type_from_string(gguf_get_val_str(gguf_ctx.get(), type_id));
-    }
-
-    // same key and type as the model loader
-    const int64_t ctx_id = gguf_find_key(gguf_ctx.get(), (arch + ".context_length").c_str());
-    if (ctx_id >= 0 && gguf_get_kv_type(gguf_ctx.get(), ctx_id) == GGUF_TYPE_UINT32) {
-        info.n_ctx_train = gguf_get_val_u32(gguf_ctx.get(), ctx_id);
-    }
-
-    // same key as llama_model_chat_template(model, nullptr)
-    info.has_chat_tmpl = gguf_find_key(gguf_ctx.get(), "tokenizer.chat_template") >= 0;
-
-    return info;
-}
-
-void common_fit_apply(common_params & params, llama_model_params & mparams, llama_context_params & cparams) {
-    if (!params.fit_params) {
-        return;
-    }
-
-    COM_TRC("%s", "fitting params to device memory ...\n");
-    COM_TRC("%s", "(for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n");
-
-    // the draft context is created from the same base params and follows the main context, fit both together
-    const bool has_draft = params.speculative.has_dft();
-    const bool spec_mtp  = std::find(params.speculative.types.begin(), params.speculative.types.end(),
-        COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
-
-    common_params params_dft = common_base_params_to_speculative(params);
-
-    auto mparams_dft = common_model_params_to_llama(params_dft);
-    auto cparams_dft = common_context_params_to_llama(params_dft);
-    if (spec_mtp) {
-        cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
-    }
-    cparams_dft.n_rs_seq = 0;
-
-    const common_fit_extra_model extra = {
-        /*.paths_model  =*/ params_dft.model.get_paths(),
-        /*.mparams      =*/ &mparams_dft,
-        /*.cparams      =*/ &cparams_dft,
-        /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
-    };
-
-    common_fit_params(params.model.get_paths(), &mparams, &cparams,
-        params.tensor_split,
-        params.tensor_buft_overrides.data(),
-        params.fit_params_target.data(),
-        params.fit_params_min_ctx,
-        has_draft || spec_mtp ? &extra : nullptr,
-        params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
-}
-
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
-
-    common_fit_apply(params, mparams, cparams);
 
     llama_model * model = common_model_load(params.model.get_paths(), mparams);
     if (model == NULL) {
@@ -1292,31 +1106,6 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
-
-    // these decision models return a score for each token via the embeddings output
-    // TODO: maybe improve this in the future
-    const auto decision_type = common_get_decision_type(model);
-    // minicpm-ocr-jev reads its class scores from the pooled output, the pooling type is the one of the GGUF
-    if (decision_type == COMMON_DECISION_TYPE_LAYA || decision_type == COMMON_DECISION_TYPE_KEV || decision_type == COMMON_DECISION_TYPE_CLEF ||
-        decision_type == COMMON_DECISION_TYPE_LFM2_D1_OMNI || decision_type == COMMON_DECISION_TYPE_VLLM_DECISION2 ||
-        decision_type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV) {
-        const auto pooling_type = decision_type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV ? LLAMA_POOLING_TYPE_UNSPECIFIED : LLAMA_POOLING_TYPE_NONE;
-
-        params.embedding    = true;
-        params.pooling_type = pooling_type;
-
-        cparams.embeddings            = true;
-        cparams.pooling_type          = pooling_type;
-        cparams.n_outputs_max         = cparams.n_batch;
-        cparams.n_outputs_max_per_seq = 1;
-
-        LOG_INF("%s", "decision model reads the embeddings output, enabling embedding mode\n");
-    }
-
-    // 0 is n_batch
-    if ((decision_type == COMMON_DECISION_TYPE_LFM3_D1 || decision_type == COMMON_DECISION_TYPE_LFM3_D1_OMNI) && cparams.n_outputs_max != 0) {
-        cparams.n_outputs_max = std::max(cparams.n_outputs_max, (uint32_t) COMMON_DECISION_LFM3_D1_SET_SIZE);
-    }
 
     if (llama_model_classifier_free_guidance(model)) {
         params.kv_unified   = true;
@@ -1722,7 +1511,6 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.progress_callback           = params.load_progress_callback;
     mparams.progress_callback_user_data = params.load_progress_callback_user_data;
     mparams.no_alloc                    = params.no_alloc;
-    mparams.load_mtp                    = params.load_mtp || std::find(params.speculative.types.begin(), params.speculative.types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
 
     return mparams;
 }
@@ -1745,7 +1533,6 @@ struct llama_context_params common_context_params_to_llama(const common_params &
 
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
-    cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
     cparams.n_outputs_max     = std::max(params.n_outputs_max, 0);
     cparams.n_outputs_max_per_seq = std::max(params.n_outputs_max_per_seq, 0);
     cparams.n_batch           = params.n_batch;
@@ -1776,8 +1563,6 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
 
-    cparams.moe_cache_size      = params.moe_cache_size;
-    cparams.moe_cache_cpu_share = params.moe_cache_cpu_share;
 
     return cparams;
 }
@@ -2121,76 +1906,6 @@ common_control_vector_data common_control_vector_load(const std::vector<common_c
     }
 
     return result;
-}
-
-ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride) {
-    const int64_t ne_datapoint = llama_n_ctx(ctx);
-    const int64_t ndata        = (tokens.size() - ne_datapoint - 1) / stride;
-    ggml_opt_dataset_t result = ggml_opt_dataset_init(
-        GGML_TYPE_I32, GGML_TYPE_I32, ne_datapoint, ne_datapoint, ndata, /*ndata_shard =*/ 1);
-
-    llama_token * data   = (llama_token *) ggml_opt_dataset_data(result)->data;
-    llama_token * labels = (llama_token *) ggml_opt_dataset_labels(result)->data;
-
-    for (int64_t idata = 0; idata < ndata; ++idata) {
-        memcpy(data   + idata*ne_datapoint, tokens.data() + idata*stride + 0, ne_datapoint*sizeof(llama_token));
-        memcpy(labels + idata*ne_datapoint, tokens.data() + idata*stride + 1, ne_datapoint*sizeof(llama_token));
-    }
-
-    return result;
-}
-
-ggml_opt_optimizer_params common_opt_lr_pars(void * userdata) {
-    ggml_opt_optimizer_params result = ggml_opt_get_default_optimizer_params(nullptr);
-    const lr_opt &            d      = *(lr_opt *) userdata;
-    result.adamw.alpha = result.sgd.alpha = d.get_lr(d.epoch);
-    result.sgd.wd = result.adamw.wd = d.wd;
-    return result;
-}
-
-// TODO make all command line args case-insensitive
-static inline bool eq_case_insensitive(char const* a, char const* b) {
-    return !
-#if defined(_MSC_VER)
-        _stricmp
-#else
-        strcasecmp
-#endif // defined(_MSC_VER)
-        (a, b);
-}
-
-enum ggml_opt_optimizer_type common_opt_get_optimizer(const char * n) {
-    if (eq_case_insensitive("adamw", n)) {
-        return GGML_OPT_OPTIMIZER_TYPE_ADAMW;
-    }
-    if (eq_case_insensitive("sgd", n)) {
-        return GGML_OPT_OPTIMIZER_TYPE_SGD;
-    }
-    return GGML_OPT_OPTIMIZER_TYPE_COUNT;
-}
-
-// TODO simplify to use just log and exp
-static float const k_log_2 = std::log(2.f);
-
-void lr_opt::init() {
-    if (lr_min > 0 && lr_min < lr0) {
-        float nhalf = std::log(lr0 / lr_min) / k_log_2;
-        float e     = epochs;
-        if (decay_epochs > 0 && decay_epochs < e) {
-            e = decay_epochs;
-        } else {
-            decay_epochs = e;
-        }
-        scale_epoch = nhalf / e;
-    }
-}
-
-float lr_opt::get_lr(float epoch) const {
-    float r = lr_min <= 0 ? lr0 :
-        epoch >= decay_epochs ? lr_min :
-        lr0 * std::pow(0.5f, epoch * scale_epoch);
-    LOG_INF("epoch %.2g lr=%.2g\n", epoch, r);
-    return r;
 }
 
 bool common_replay_last_token(struct llama_context * ctx, llama_token last_token, int32_t pos) {

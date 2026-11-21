@@ -50,32 +50,6 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     return {output, new_state};
 }
 
-ggml_tensor * llm_build_delta_net_base::build_conv_state(
-        llm_graph_input_rs * inp,
-        ggml_tensor *        conv_states_all,
-        ggml_tensor *        qkv_mixed,
-        int64_t              conv_kernel_size,
-        int64_t              conv_channels,
-        int                  il) {
-    const int64_t n_seqs = ubatch.n_seqs;
-
-    ggml_tensor * conv_states = build_rs(inp, conv_states_all, hparams.n_embd_r(), n_seqs);
-    cb(conv_states, "conv_states", il);
-
-    conv_states = ggml_reshape_3d(ctx0, conv_states, conv_kernel_size - 1, conv_channels, n_seqs);
-    cb(conv_states, "conv_states_reshaped", il);
-
-    qkv_mixed = ggml_transpose(ctx0, qkv_mixed);
-    cb(qkv_mixed, "qkv_mixed_transposed", il);
-
-    ggml_tensor * conv_input = ggml_concat(ctx0, conv_states, qkv_mixed, 0);
-    cb(conv_input, "conv_input", il);
-
-    build_conv_state_store(inp, conv_states_all, conv_input, conv_kernel_size - 1, 0);
-
-    return conv_input;
-}
-
 ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
         llm_graph_input_rs * inp,
         ggml_tensor *        ssm_states_all,
